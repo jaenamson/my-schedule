@@ -1,10 +1,106 @@
-const CACHE="my-schedule-cache-v2";
-const ASSETS=["./","./index.html","./styles.css","./app.js","./manifest.json","./icon-192.png","./icon-512.png"];
-self.addEventListener("install",e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS))));
-self.addEventListener("activate",e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k))))));
-self.addEventListener("fetch",e=>{
-  if(e.request.method!=="GET")return;
-  e.respondWith(caches.match(e.request).then(cached=>cached||fetch(e.request).then(response=>{
-    const copy=response.clone();caches.open(CACHE).then(c=>c.put(e.request,copy));return response;
-  }).catch(()=>caches.match("./index.html"))));
+
+const CACHE = "my-schedule-cache-v3";
+
+const ASSETS = [
+  "./",
+  "./index.html",
+  "./styles.css",
+  "./app.js",
+  "./manifest.json",
+  "./icon-192.png",
+  "./icon-512.png"
+];
+
+self.addEventListener("install", event => {
+  event.waitUntil(
+    caches.open(CACHE).then(cache => cache.addAll(ASSETS))
+  );
+  self.skipWaiting();
+});
+
+self.addEventListener("activate", event => {
+  event.waitUntil(
+    caches.keys().then(keys =>
+      Promise.all(
+        keys
+          .filter(key => key !== CACHE)
+          .map(key => caches.delete(key))
+      )
+    )
+  );
+  self.clients.claim();
+});
+
+// 백그라운드 푸시 알림 수신
+self.addEventListener("push", event => {
+  let data = {};
+
+  if (event.data) {
+    try {
+      data = event.data.json();
+    } catch {
+      data = {
+        title: "My Schedule",
+        body: event.data.text()
+      };
+    }
+  }
+
+  const title = data.title || "My Schedule";
+  const options = {
+    body: data.body || "予定の時間です。",
+    icon: "./icon-192.png",
+    badge: "./icon-192.png",
+    data: {
+      url: data.url || "./"
+    }
+  };
+
+  event.waitUntil(
+    self.registration.showNotification(title, options)
+  );
+});
+
+// 알림을 누르면 앱 열기
+self.addEventListener("notificationclick", event => {
+  event.notification.close();
+
+  const url = new URL(
+    event.notification.data?.url || "./",
+    self.location.origin
+  ).href;
+
+  event.waitUntil(
+    self.clients.matchAll({
+      type: "window",
+      includeUncontrolled: true
+    }).then(clients => {
+      for (const client of clients) {
+        if (client.url.startsWith(self.location.origin)) {
+          return client.focus();
+        }
+      }
+
+      return self.clients.openWindow(url);
+    })
+  );
+});
+
+// 기존 오프라인 캐시 기능
+self.addEventListener("fetch", event => {
+  if (event.request.method !== "GET") return;
+
+  event.respondWith(
+    caches.match(event.request).then(cached =>
+      cached || fetch(event.request).then(response => {
+        const copy = response.clone();
+
+        caches.open(CACHE).then(cache =>
+          cache.put(event.request, copy)
+        );
+
+        return response;
+      }).catch(() => caches.match("./index.html"))
+    )
+  );
 });
