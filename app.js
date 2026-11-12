@@ -1,8 +1,8 @@
 const STORAGE_KEY = "my-schedule-events-v1";
 const CATEGORIES = {
-  work:{label:"업무",color:"#4285f4"}, personal:{label:"개인",color:"#8b5cf6"},
-  family:{label:"가족",color:"#ec4899"}, health:{label:"건강",color:"#16a085"},
-  other:{label:"기타",color:"#f59e0b"}
+  work:{label:"仕事",color:"#4285f4"}, personal:{label:"プライベート",color:"#8b5cf6"},
+  family:{label:"家族",color:"#ec4899"}, health:{label:"健康",color:"#16a085"},
+  other:{label:"その他",color:"#f59e0b"}
 };
 const $ = id => document.getElementById(id);
 let events = loadEvents();
@@ -42,7 +42,7 @@ function render(){
 }
 function renderCalendar(){
   const y=viewDate.getFullYear(),m=viewDate.getMonth();
-  $("monthTitle").textContent=`${y}년 ${m+1}월`;
+  $("monthTitle").textContent=`${y}年${m+1}月`;
   const first=new Date(y,m,1), start=new Date(y,m,1-first.getDay());
   const today=dateKey(new Date()), grid=$("calendarGrid");grid.innerHTML="";
   for(let i=0;i<42;i++){
@@ -66,31 +66,31 @@ function makeEventRow(ev,day){
   const main=document.createElement("div");main.className="event-main";
   const name=document.createElement("div");name.className="event-name";name.textContent=ev.title;if(ev.done)name.style.textDecoration="line-through";
   const meta=document.createElement("div");meta.className="event-meta";
-  const cat=CATEGORIES[ev.category]?.label||"기타";
-  meta.textContent=`${ev.time||"시간 미정"} · ${cat}${ev.repeat!=="none"?" · 반복":""}${ev.notes?" · 메모 있음":""}`;
+  const cat=CATEGORIES[ev.category]?.label||"その他";
+  meta.textContent=`${ev.time||"時間未定"} · ${cat}${ev.repeat!=="none"?" · 繰り返し":""}${ev.notes?" · メモあり":""}`;
   main.append(name,meta);row.append(main);
   const actions=document.createElement("div");actions.className="event-actions";
-  const check=document.createElement("input");check.type="checkbox";check.className="done-check";check.checked=!!ev.done;check.setAttribute("aria-label","완료");
+  const check=document.createElement("input");check.type="checkbox";check.className="done-check";check.checked=!!ev.done;check.setAttribute("aria-label","完了");
   check.addEventListener("change",()=>{const original=events.find(x=>x.id===ev.id);if(original){original.done=check.checked;localStorage.setItem(STORAGE_KEY,JSON.stringify(events));render()}});
-  const edit=document.createElement("button");edit.className="event-edit";edit.textContent="⋯";edit.setAttribute("aria-label","수정");edit.addEventListener("click",()=>openEditor(ev));
+  const edit=document.createElement("button");edit.className="event-edit";edit.textContent="⋯";edit.setAttribute("aria-label","編集");edit.addEventListener("click",()=>openEditor(ev));
   actions.append(check,edit);row.append(actions);return row;
 }
 function renderAgenda(){
-  $("selectedDateLabel").textContent=parseDate(selectedDate).toLocaleDateString("ko-KR",{month:"long",day:"numeric",weekday:"short"});
+  $("selectedDateLabel").textContent=parseDate(selectedDate).toLocaleDateString("ja-JP",{month:"long",day:"numeric",weekday:"short"});
   const list=$("agendaList");list.innerHTML="";const items=eventsOn(selectedDate);
-  if(!items.length){list.innerHTML='<div class="empty">이 날짜에는 등록된 일정이 없습니다.</div>';return}
+  if(!items.length){list.innerHTML='<div class="empty">この日の予定はありません。</div>';return}
   items.forEach(e=>list.append(makeEventRow(e,selectedDate)));
 }
 function renderToday(){
-  const today=dateKey(new Date());$("todayLabel").textContent=new Date().toLocaleDateString("ko-KR",{month:"long",day:"numeric",weekday:"long"});
-  const items=eventsOn(today);$("todayCount").textContent=`${items.length}개 일정`;
+  const today=dateKey(new Date());$("todayLabel").textContent=new Date().toLocaleDateString("ja-JP",{month:"long",day:"numeric",weekday:"long"});
+  const items=eventsOn(today);$("todayCount").textContent=`${items.length}件の予定`;
   const list=$("todayList");list.innerHTML="";
-  if(!items.length){list.innerHTML='<div class="empty">오늘은 등록된 일정이 없습니다.</div>';return}
+  if(!items.length){list.innerHTML='<div class="empty">今日は予定がありません。</div>';return}
   items.slice(0,4).forEach(e=>list.append(makeEventRow(e,today)));
 }
 function openEditor(ev=null){
   $("eventForm").reset();$("eventId").value=ev?.id||"";
-  $("dialogTitle").textContent=ev?"일정 수정":"일정 추가";
+  $("dialogTitle").textContent=ev?"予定を編集":"予定を追加";
   $("eventTitle").value=ev?.title||"";$("eventDate").value=ev?.date||selectedDate;
   $("eventTime").value=ev?.time||"";$("eventCategory").value=ev?.category||"work";
   $("eventRepeat").value=ev?.repeat||"none";$("eventReminder").value=ev?.reminder??"none";
@@ -106,19 +106,19 @@ function saveEvent(e){
     notes:$("eventNotes").value.trim(),done:id?(events.find(x=>x.id===id)?.done||false):false};
   if(!item.title||!item.date)return;
   if(id){events=events.map(x=>x.id===id?item:x)}else events.push(item);
-  selectedDate=item.date;viewDate=parseDate(item.date);$("eventDialog").close();save();toast("일정을 저장했어요.");
+  selectedDate=item.date;viewDate=parseDate(item.date);$("eventDialog").close();save();toast("予定を保存しました。");
 }
 function exportData(){
   const blob=new Blob([JSON.stringify({app:"My Schedule",version:1,exportedAt:new Date().toISOString(),events},null,2)],{type:"application/json"});
-  const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=`my-schedule-${dateKey(new Date())}.json`;a.click();URL.revokeObjectURL(url);toast("백업 파일을 만들었어요.");
+  const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=`my-schedule-${dateKey(new Date())}.json`;a.click();URL.revokeObjectURL(url);toast("バックアップを作成しました。");
 }
 function importData(file){
   const reader=new FileReader();reader.onload=()=>{
     try{const data=JSON.parse(reader.result);const incoming=Array.isArray(data)?data:data.events;
       if(!Array.isArray(incoming)||!incoming.every(x=>x.title&&x.date))throw Error();
-      if(!confirm(`백업의 일정 ${incoming.length}개를 가져올까요? 기존 일정은 유지하고 ID가 같은 항목은 덮어씁니다.`))return;
-      const map=new Map(events.map(x=>[x.id,x]));incoming.forEach(x=>map.set(x.id||uid(),{...x,id:x.id||uid()}));events=[...map.values()];save();toast("복원이 완료됐어요.");
-    }catch{alert("올바른 My Schedule 백업 파일이 아닙니다.");}
+      if(!confirm(`バックアップ内の予定${incoming.length}件を読み込みますか？既存の予定は保持し、同じIDの項目は上書きします。`))return;
+      const map=new Map(events.map(x=>[x.id,x]));incoming.forEach(x=>map.set(x.id||uid(),{...x,id:x.id||uid()}));events=[...map.values()];save();toast("復元が完了しました。");
+    }catch{alert("My Scheduleのバックアップファイルとして読み込めません。");}
   };reader.readAsText(file);
 }
 function checkReminders(){
@@ -134,7 +134,7 @@ function checkReminders(){
       due.setMinutes(due.getMinutes()-Number(ev.reminder));
       const key=`${ev.id}|${day}|${ev.reminder}`;
       if(due<=now&&now-due<60000&&!sessionStorage.getItem(key)){
-        new Notification(ev.title,{body:`${ev.time} 일정${ev.notes?" · "+ev.notes:""}`,icon:"./icon-192.png"});sessionStorage.setItem(key,"1");
+        new Notification(ev.title,{body:`${ev.time}の予定${ev.notes?" · "+ev.notes:""}`,icon:"./icon-192.png"});sessionStorage.setItem(key,"1");
       }
     });
   });
@@ -146,15 +146,15 @@ $("navToday").onclick=()=>{selectedDate=dateKey(new Date());viewDate=new Date();
 $("navCalendar").onclick=()=>{document.querySelector(".calendar").scrollIntoView({behavior:"smooth"})};
 $("closeDialog").onclick=$("cancelBtn").onclick=()=>$("eventDialog").close();
 $("eventForm").addEventListener("submit",saveEvent);
-$("deleteBtn").onclick=()=>{const id=$("eventId").value;if(id&&confirm("이 일정을 삭제할까요?")){events=events.filter(x=>x.id!==id);$("eventDialog").close();save();toast("삭제했어요.")}};
+$("deleteBtn").onclick=()=>{const id=$("eventId").value;if(id&&confirm("この予定を削除しますか？")){events=events.filter(x=>x.id!==id);$("eventDialog").close();save();toast("削除しました。")}};
 $("exportBtn").onclick=exportData;$("importBtn").onclick=()=>$("importFile").click();
 $("importFile").onchange=e=>{if(e.target.files[0])importData(e.target.files[0]);e.target.value=""};
 $("settingsBtn").onclick=()=>$("settingsDialog").showModal();
 $("closeSettings").onclick=()=>$("settingsDialog").close();
 $("enableNotifications").onclick=async()=>{
-  if(!("Notification"in window)){alert("이 브라우저는 알림을 지원하지 않습니다.");return}
-  const p=await Notification.requestPermission();$("notificationStatus").textContent=p==="granted"?"알림 권한이 허용됐습니다. 앱이 열려 있을 때 알림을 확인합니다.":"알림 권한이 허용되지 않았습니다.";
+  if(!("Notification"in window)){alert("このブラウザは通知に対応していません。");return}
+  const p=await Notification.requestPermission();$("notificationStatus").textContent=p==="granted"?"通知が許可されました。アプリを開いている間に通知を確認できます。":"通知が許可されていません。";
 };
-$("installHelp").onclick=()=>alert("Safari에서 이 앱을 연 다음 공유 버튼을 누르고 '홈 화면에 추가'를 선택하세요.");
+$("installHelp").onclick=()=>alert("Safariでこのアプリを開き、共有ボタンから「ホーム画面に追加」を選択してください。");
 if("serviceWorker"in navigator && location.protocol.startsWith("http"))navigator.serviceWorker.register("./sw.js").catch(()=>{});
 render();checkReminders();setInterval(checkReminders,15000);

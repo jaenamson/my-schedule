@@ -1,12 +1,12 @@
 {
-  "name": "My Schedule - 개인 일정관리",
-  "short_name": "My Schedule",
-  "lang": "ko",
+  "name": "My Schedule",
+  "short_name": "Schedule",
+  "lang": "ja",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#f4f7fb",
-  "theme_color": "#2563eb",
+  "background_color": "#f5f7fa",
+  "theme_color": "#203b63",
   "icons": [
     {
       "src": "./icon-192.png",
