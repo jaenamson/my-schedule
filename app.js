@@ -296,22 +296,33 @@ async function loginAndSync() {
 }
 
 // 予定1件をクラウドに保存
+
 async function syncEventToCloud(ev) {
-  if (!cloudToken) return;
+  if (!cloudToken) {
+    setCloudStatus("クラウド未接続");
+    return false;
+  }
 
   try {
-    await cloudRequest("/api/events", {
+    const result = await cloudRequest("/api/events", {
       method: "POST",
       body: JSON.stringify(ev)
     });
 
+    if (result.status !== "ok") {
+      throw new Error("クラウドへの保存が確認できませんでした。");
+    }
+
     setCloudStatus("クラウド保存完了");
+    return true;
 
   } catch (error) {
     console.error("Cloud save error:", error);
-    setCloudStatus("ローカル保存済み・クラウド未同期");
+    setCloudStatus("クラウド保存エラー: " + error.message);
+    return false;
   }
 }
+
 
 // クラウドから予定を削除
 async function deleteEventFromCloud(id) {
@@ -642,7 +653,8 @@ function openEditor(ev = null) {
   $("eventDialog").showModal();
 }
 
-function saveEvent(e) {
+
+async function saveEvent(e) {
   e.preventDefault();
 
   const id = $("eventId").value;
@@ -675,10 +687,12 @@ function saveEvent(e) {
   $("eventDialog").close();
 
   save();
-  syncEventToCloud(item);
+
+  await syncEventToCloud(item);
 
   toast("予定を保存しました。");
 }
+
 
 // ------------------------------
 // Backup / Restore
