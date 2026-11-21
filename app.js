@@ -1,20 +1,15 @@
 
 const STORAGE_KEY = "my-schedule-events-v1";
-const API_BASE = "https://my-schedule-push.sonjaenam4261.workers.dev";
-const TOKEN_KEY = "my-schedule-api-token-v1";
-
-let cloudToken = localStorage.getItem(TOKEN_KEY) || "";
 const TOKEN_KEY = "my-schedule-api-token-v1";
 const DELETED_KEY = "my-schedule-deleted-v1";
-
 const API_BASE = "https://my-schedule-push.sonjaenam4261.workers.dev";
 
 const CATEGORIES = {
-  work:{label:"仕事",color:"#4285f4"},
-  personal:{label:"プライベート",color:"#8b5cf6"},
-  family:{label:"家族",color:"#ec4899"},
-  health:{label:"健康",color:"#16a085"},
-  other:{label:"その他",color:"#f59e0b"}
+  work: { label: "仕事", color: "#4285f4" },
+  personal: { label: "プライベート", color: "#8b5cf6" },
+  family: { label: "家族", color: "#ec4899" },
+  health: { label: "健康", color: "#16a085" },
+  other: { label: "その他", color: "#f59e0b" }
 };
 
 const $ = id => document.getElementById(id);
@@ -25,39 +20,81 @@ let selectedDate = dateKey(new Date());
 let toastTimer;
 let cloudToken = localStorage.getItem(TOKEN_KEY) || "";
 
-function dateKey(d){
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+// ------------------------------
+// Basic functions
+// ------------------------------
+
+function dateKey(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-function parseDate(s){
-  const [y,m,d]=s.split("-").map(Number);
-  return new Date(y,m-1,d);
+function parseDate(s) {
+  const [y, m, d] = s.split("-").map(Number);
+  return new Date(y, m - 1, d);
 }
 
-function loadEvents(){
-  try{return JSON.parse(localStorage.getItem(STORAGE_KEY)||"[]")}
-  catch{return []}
+function loadEvents() {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+  } catch {
+    return [];
+  }
 }
 
-function loadDeletedIds(){
-  try{return JSON.parse(localStorage.getItem(DELETED_KEY)||"[]")}
-  catch{return []}
+function loadDeletedIds() {
+  try {
+    return JSON.parse(localStorage.getItem(DELETED_KEY) || "[]");
+  } catch {
+    return [];
+  }
 }
 
-function saveDeletedIds(ids){
-  localStorage.setItem(DELETED_KEY,JSON.stringify(ids));
+function saveDeletedIds(ids) {
+  localStorage.setItem(DELETED_KEY, JSON.stringify(ids));
 }
 
-function save(){
-  localStorage.setItem(STORAGE_KEY,JSON.stringify(events));
+function uid() {
+  return crypto.randomUUID
+    ? crypto.randomUUID()
+    : String(Date.now()) + Math.random();
+}
+
+function toast(msg) {
+  const el = $("toast");
+  if (!el) return;
+
+  el.textContent = msg;
+  el.classList.add("show");
+
+  clearTimeout(toastTimer);
+
+  toastTimer = setTimeout(() => {
+    el.classList.remove("show");
+  }, 2300);
+}
+
+function save() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(events));
   render();
 }
-// Cloudflare API 통신
+
+// ------------------------------
+// Cloudflare API
+// ------------------------------
+
+function setCloudStatus(message) {
+  const el = $("cloudStatus");
+  if (el) el.textContent = message;
+}
+
 async function cloudRequest(path, options = {}) {
   const headers = {
-    ...(options.headers || {}),
-    Authorization: `Bearer ${cloudToken}`
+    ...(options.headers || {})
   };
+
+  if (cloudToken) {
+    headers.Authorization = `Bearer ${cloudToken}`;
+  }
 
   if (options.body) {
     headers["Content-Type"] = "application/json";
@@ -68,7 +105,13 @@ async function cloudRequest(path, options = {}) {
     headers
   });
 
-  const data = await res.json();
+  let data = {};
+
+  try {
+    data = await res.json();
+  } catch {
+    // JSON以外のレスポンスの場合
+  }
 
   if (!res.ok) {
     throw new Error(data.error || `HTTP ${res.status}`);
@@ -77,35 +120,83 @@ async function cloudRequest(path, options = {}) {
   return data;
 }
 
-// 일정 1건 클라우드 저장
-async function cloudSaveEvent(event) {
-  if (!cloudToken) return;
-
-  try {
-    await cloudRequest("/api/events", {
-      method: "POST",
-      body: JSON.stringify(event)
-    });
-
-    $("cloudStatus").textContent = "クラウド同期済み";
-  } catch (error) {
-    $("cloudStatus").textContent =
-      "ローカル保存済み・クラウド同期失敗";
-    console.error(error);
-  }
+function convertCloudEvent(row) {
+  return {
+    id: row.id,
+    title: row.title,
+    date: row.event_date || row.start_at?.slice(0, 10) || "",
+    time: row.event_time ?? row.start_at?.slice(11, 16) ?? "",
+    category: row.category || "other",
+    repeat: row.repeat_type || "none",
+    reminder: row.reminder ?? "none",
+    notes: row.memo || "",
+    done: Number(row.is_done) === 1
+  };
 }
 
-// 클라우드 일정 전체 동기화
-async function syncAllEvents() {
-  for (const event of events) {
+// クラウド全体同期
+async function syncAllCloud() {
+  if (!cloudToken) {
+    setCloudStatus("クラウド未接続");
+    return;
+  }
+
+  setCloudStatus("クラウドと同期中...");
+
+  // 1. クラウドの予定を取得
+  const result = await cloudRequest("/api/events");
+
+  const remoteEvents = (result.events || []).map(convertCloudEvent);
+
+  // 2. 削除履歴を確認
+  const deletedIds = loadDeletedIds();
+  const deletedSet = new Set(deletedIds);
+
+  // 3. 削除履歴をクラウドに反映
+  for (const id of deletedIds) {
+    await cloudRequest(
+      "/api/events?id=" + encodeURIComponent(id),
+      { method: "DELETE" }
+    );
+  }
+
+  // 4. クラウドとローカルの予定を統合
+  const merged = new Map();
+
+  remoteEvents.forEach(ev => {
+    if (!deletedSet.has(ev.id)) {
+      merged.set(ev.id, ev);
+    }
+  });
+
+  // 同じIDの場合はローカルの予定を優先
+  events.forEach(ev => {
+    if (!deletedSet.has(ev.id)) {
+      merged.set(ev.id, ev);
+    }
+  });
+
+  events = [...merged.values()];
+
+  // 5. ローカルに保存
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(events));
+  render();
+
+  // 6. クラウドに保存
+  for (const ev of events) {
     await cloudRequest("/api/events", {
       method: "POST",
-      body: JSON.stringify(event)
+      body: JSON.stringify(ev)
     });
   }
+
+  // 7. 同期成功後に削除履歴をクリア
+  saveDeletedIds([]);
+
+  setCloudStatus(`同期完了（${events.length}件）`);
 }
 
-// 로그인 및 최초 동기화
+// ログイン
 async function loginAndSync() {
   const password = $("cloudPassword").value;
 
@@ -114,73 +205,74 @@ async function loginAndSync() {
     return;
   }
 
-  $("cloudStatus").textContent = "接続中...";
+  const button = $("connectCloud");
+
+  button.disabled = true;
+  setCloudStatus("ログイン中...");
 
   try {
-    // 비밀번호 인증
-    const loginRes = await fetch(API_BASE + "/auth", {
+    // パスワード認証
+    const result = await cloudRequest("/auth", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
       body: JSON.stringify({ password })
     });
 
-    const loginData = await loginRes.json();
-
-    if (!loginRes.ok) {
-      throw new Error(loginData.error || "ログインに失敗しました。");
+    if (!result.token) {
+      throw new Error("認証トークンを取得できませんでした。");
     }
 
-    cloudToken = loginData.token;
+    cloudToken = result.token;
     localStorage.setItem(TOKEN_KEY, cloudToken);
 
-    // 클라우드 일정 가져오기
-    const remoteData = await cloudRequest("/api/events");
-
-    const remoteEvents = remoteData.events.map(e => ({
-      id: e.id,
-      title: e.title,
-      date: e.event_date || e.start_at.slice(0, 10),
-      time: e.event_time || "",
-      category: e.category || "other",
-      repeat: e.repeat_type || "none",
-      reminder: e.reminder || "none",
-      notes: e.memo || "",
-      done: !!e.is_done
-    }));
-
-    // 같은 ID는 로컬 일정을 우선하고, 서로 다른 일정은 모두 유지
-    const merged = new Map();
-
-    remoteEvents.forEach(e => merged.set(e.id, e));
-    events.forEach(e => merged.set(e.id, e));
-
-    events = [...merged.values()];
-
-    // 로컬 저장소 보존 및 갱신
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(events));
-    render();
-
-    // 병합된 전체 일정을 클라우드에 반영
-    await syncAllEvents();
-
     $("cloudPassword").value = "";
-    $("cloudStatus").textContent =
-      `同期完了（${events.length}件）`;
+
+    // 初回同期
+    await syncAllCloud();
 
     toast("クラウド同期が完了しました。");
 
   } catch (error) {
-    $("cloudStatus").textContent =
-      "同期エラー：" + error.message;
+    console.error("Cloud login/sync error:", error);
 
-    console.error(error);
+    setCloudStatus("エラー: " + error.message);
+
+    alert(
+      "クラウド接続に失敗しました。\n" +
+      error.message
+    );
+
+  } finally {
+    button.disabled = false;
   }
 }
 
-// 클라우드 일정 삭제
-async function cloudDeleteEvent(id) {
+// 予定1件をクラウドに保存
+async function syncEventToCloud(ev) {
+  if (!cloudToken) return;
+
+  try {
+    await cloudRequest("/api/events", {
+      method: "POST",
+      body: JSON.stringify(ev)
+    });
+
+    setCloudStatus("クラウド保存完了");
+
+  } catch (error) {
+    console.error("Cloud save error:", error);
+    setCloudStatus("ローカル保存済み・クラウド未同期");
+  }
+}
+
+// クラウドから予定を削除
+async function deleteEventFromCloud(id) {
+  const deletedIds = loadDeletedIds();
+
+  if (!deletedIds.includes(id)) {
+    deletedIds.push(id);
+    saveDeletedIds(deletedIds);
+  }
+
   if (!cloudToken) return;
 
   try {
@@ -189,213 +281,14 @@ async function cloudDeleteEvent(id) {
       { method: "DELETE" }
     );
 
-    $("cloudStatus").textContent = "クラウド同期済み";
-
-  } catch (error) {
-    $("cloudStatus").textContent =
-      "ローカル保存済み・クラウド同期失敗";
-
-    console.error(error);
-  }
-}
-function uid(){
-  return crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random();
-}
-
-function toast(msg){
-  const el=$("toast");
-  el.textContent=msg;
-  el.classList.add("show");
-  clearTimeout(toastTimer);
-  toastTimer=setTimeout(()=>el.classList.remove("show"),2300);
-}
-
-// ------------------------------
-// Cloudflare API
-// ------------------------------
-
-function setCloudStatus(message){
-  const el=$("cloudStatus");
-  if(el)el.textContent=message;
-}
-
-async function cloudRequest(path,options={}){
-  const headers={
-    ...(options.headers||{})
-  };
-
-  if(cloudToken){
-    headers.Authorization=`Bearer ${cloudToken}`;
-  }
-
-  if(options.body){
-    headers["Content-Type"]="application/json";
-  }
-
-  const res=await fetch(API_BASE+path,{
-    ...options,
-    headers
-  });
-
-  let data={};
-  try{data=await res.json()}catch{}
-
-  if(!res.ok){
-    throw new Error(data.error||`HTTP ${res.status}`);
-  }
-
-  return data;
-}
-
-function convertCloudEvent(row){
-  return {
-    id:row.id,
-    title:row.title,
-    date:row.event_date || row.start_at?.slice(0,10) || "",
-    time:row.event_time ?? row.start_at?.slice(11,16) ?? "",
-    category:row.category || "other",
-    repeat:row.repeat_type || "none",
-    reminder:row.reminder ?? "none",
-    notes:row.memo || "",
-    done:Number(row.is_done)===1
-  };
-}
-
-async function syncAllCloud(){
-  if(!cloudToken){
-    setCloudStatus("クラウド未接続");
-    return;
-  }
-
-  setCloudStatus("クラウドと同期中...");
-
-  // 1. Cloudflareから既存データを取得
-  const result=await cloudRequest("/api/events");
-  const remoteEvents=(result.events||[]).map(convertCloudEvent);
-
-  // 2. オフライン中に削除した予定をクラウドからも削除
-  const deletedIds=loadDeletedIds();
-
-  for(const id of deletedIds){
-    await cloudRequest(
-      "/api/events?id="+encodeURIComponent(id),
-      {method:"DELETE"}
-    );
-  }
-
-  // 3. クラウドの予定をベースにして、ローカルの予定を優先して統合
-  const deletedSet=new Set(deletedIds);
-  const merged=new Map();
-
-  remoteEvents.forEach(ev=>{
-    if(!deletedSet.has(ev.id)){
-      merged.set(ev.id,ev);
-    }
-  });
-
-  events.forEach(ev=>{
-    if(!deletedSet.has(ev.id)){
-      merged.set(ev.id,ev);
-    }
-  });
-
-  events=[...merged.values()];
-
-  // 4. ローカルにも保存
-  localStorage.setItem(STORAGE_KEY,JSON.stringify(events));
-  render();
-
-  // 5. 統合した予定をクラウドに保存
-  for(const ev of events){
-    await cloudRequest("/api/events",{
-      method:"POST",
-      body:JSON.stringify(ev)
-    });
-  }
-
-  // 6. 同期成功後に削除履歴をクリア
-  saveDeletedIds([]);
-
-  setCloudStatus(`同期完了（${events.length}件）`);
-}
-
-async function loginAndSync(){
-  const password=$("cloudPassword").value;
-
-  if(!password){
-    alert("パスワードを入力してください。");
-    return;
-  }
-
-  const button=$("connectCloud");
-  button.disabled=true;
-  setCloudStatus("ログイン中...");
-
-  try{
-    // パスワードでログイン
-    const result=await cloudRequest("/auth",{
-      method:"POST",
-      body:JSON.stringify({password})
-    });
-
-    cloudToken=result.token;
-    localStorage.setItem(TOKEN_KEY,cloudToken);
-
-    $("cloudPassword").value="";
-
-    // ログイン後に初回同期
-    await syncAllCloud();
-
-    toast("クラウド同期が完了しました。");
-
-  }catch(error){
-    console.error("Cloud login/sync error:",error);
-    setCloudStatus("エラー: "+error.message);
-    alert("クラウド接続に失敗しました。\n"+error.message);
-
-  }finally{
-    button.disabled=false;
-  }
-}
-
-async function syncEventToCloud(ev){
-  if(!cloudToken)return;
-
-  try{
-    await cloudRequest("/api/events",{
-      method:"POST",
-      body:JSON.stringify(ev)
-    });
-
-    setCloudStatus("クラウド保存完了");
-
-  }catch(error){
-    console.error("Cloud save error:",error);
-    setCloudStatus("ローカル保存済み・クラウド未同期");
-  }
-}
-
-async function deleteEventFromCloud(id){
-  const deletedIds=loadDeletedIds();
-
-  if(!deletedIds.includes(id)){
-    deletedIds.push(id);
-    saveDeletedIds(deletedIds);
-  }
-
-  if(!cloudToken)return;
-
-  try{
-    await cloudRequest(
-      "/api/events?id="+encodeURIComponent(id),
-      {method:"DELETE"}
+    saveDeletedIds(
+      loadDeletedIds().filter(x => x !== id)
     );
 
-    saveDeletedIds(loadDeletedIds().filter(x=>x!==id));
     setCloudStatus("クラウド削除完了");
 
-  }catch(error){
-    console.error("Cloud delete error:",error);
+  } catch (error) {
+    console.error("Cloud delete error:", error);
     setCloudStatus("削除済み・クラウド未同期");
   }
 }
@@ -404,92 +297,142 @@ async function deleteEventFromCloud(id){
 // Calendar
 // ------------------------------
 
-function occurrenceDates(ev,from,to){
-  const start=parseDate(ev.date),out=[];
+function occurrenceDates(ev, from, to) {
+  const start = parseDate(ev.date);
+  const out = [];
 
-  if(ev.repeat==="none"){
-    if(start>=from&&start<=to)out.push(dateKey(start));
+  if (ev.repeat === "none") {
+    if (start >= from && start <= to) {
+      out.push(dateKey(start));
+    }
+
     return out;
   }
 
-  let cur=new Date(Math.max(start.getTime(),from.getTime()));
-  cur.setHours(0,0,0,0);
+  let cur = new Date(
+    Math.max(start.getTime(), from.getTime())
+  );
 
-  for(let i=0;i<500&&cur<=to;i++,cur.setDate(cur.getDate()+1)){
-    if(cur<start)continue;
+  cur.setHours(0, 0, 0, 0);
 
-    let match=false;
-    if(ev.repeat==="daily")match=true;
-    if(ev.repeat==="weekly")match=cur.getDay()===start.getDay();
-    if(ev.repeat==="monthly")match=cur.getDate()===start.getDate();
-    if(ev.repeat==="yearly")match=cur.getMonth()===start.getMonth()&&cur.getDate()===start.getDate();
+  for (
+    let i = 0;
+    i < 500 && cur <= to;
+    i++, cur.setDate(cur.getDate() + 1)
+  ) {
+    if (cur < start) continue;
 
-    if(match)out.push(dateKey(cur));
+    let match = false;
+
+    if (ev.repeat === "daily") match = true;
+
+    if (ev.repeat === "weekly") {
+      match = cur.getDay() === start.getDay();
+    }
+
+    if (ev.repeat === "monthly") {
+      match = cur.getDate() === start.getDate();
+    }
+
+    if (ev.repeat === "yearly") {
+      match =
+        cur.getMonth() === start.getMonth() &&
+        cur.getDate() === start.getDate();
+    }
+
+    if (match) {
+      out.push(dateKey(cur));
+    }
   }
 
   return out;
 }
 
-function eventsOn(day){
-  const target=parseDate(day);
-  const from=new Date(target);
-  from.setDate(from.getDate()-370);
+function eventsOn(day) {
+  const target = parseDate(day);
 
-  return events.filter(e=>occurrenceDates(e,from,target).includes(day))
-    .sort((a,b)=>(a.time||"").localeCompare(b.time||""));
+  const from = new Date(target);
+  from.setDate(from.getDate() - 370);
+
+  return events
+    .filter(e =>
+      occurrenceDates(e, from, target).includes(day)
+    )
+    .sort((a, b) =>
+      (a.time || "").localeCompare(b.time || "")
+    );
 }
 
-function render(){
+function render() {
   renderCalendar();
   renderAgenda();
   renderToday();
 }
 
-function renderCalendar(){
-  const y=viewDate.getFullYear(),m=viewDate.getMonth();
-  $("monthTitle").textContent=`${y}年${m+1}月`;
+function renderCalendar() {
+  const y = viewDate.getFullYear();
+  const m = viewDate.getMonth();
 
-  const first=new Date(y,m,1);
-  const start=new Date(y,m,1-first.getDay());
-  const today=dateKey(new Date());
-  const grid=$("calendarGrid");
+  $("monthTitle").textContent = `${y}年${m + 1}月`;
 
-  grid.innerHTML="";
+  const first = new Date(y, m, 1);
+  const start = new Date(y, m, 1 - first.getDay());
 
-  for(let i=0;i<42;i++){
-    const d=new Date(start);
-    d.setDate(start.getDate()+i);
-    const key=dateKey(d);
+  const today = dateKey(new Date());
+  const grid = $("calendarGrid");
 
-    const btn=document.createElement("button");
-    btn.className="calendar-day";
+  grid.innerHTML = "";
 
-    if(d.getMonth()!==m)btn.classList.add("muted");
-    if(key===today)btn.classList.add("today");
-    if(key===selectedDate)btn.classList.add("selected");
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(start);
 
-    const num=document.createElement("span");
-    num.className="day-num";
-    num.textContent=d.getDate();
+    d.setDate(start.getDate() + i);
+
+    const key = dateKey(d);
+
+    const btn = document.createElement("button");
+    btn.className = "calendar-day";
+
+    if (d.getMonth() !== m) {
+      btn.classList.add("muted");
+    }
+
+    if (key === today) {
+      btn.classList.add("today");
+    }
+
+    if (key === selectedDate) {
+      btn.classList.add("selected");
+    }
+
+    const num = document.createElement("span");
+    num.className = "day-num";
+    num.textContent = d.getDate();
+
     btn.append(num);
 
-    const dots=document.createElement("span");
-    dots.className="dots";
+    const dots = document.createElement("span");
+    dots.className = "dots";
 
-    const dayEvents=eventsOn(key);
+    const dayEvents = eventsOn(key);
 
-    [...new Set(dayEvents.map(e=>e.category))].slice(0,3).forEach(cat=>{
-      const dot=document.createElement("i");
-      dot.className="dot";
-      dot.style.background=CATEGORIES[cat]?.color||"#999";
-      dots.append(dot);
-    });
+    [...new Set(dayEvents.map(e => e.category))]
+      .slice(0, 3)
+      .forEach(cat => {
+        const dot = document.createElement("i");
+
+        dot.className = "dot";
+        dot.style.background =
+          CATEGORIES[cat]?.color || "#999";
+
+        dots.append(dot);
+      });
 
     btn.append(dots);
 
-    btn.addEventListener("click",()=>{
-      selectedDate=key;
-      viewDate=new Date(d);
+    btn.addEventListener("click", () => {
+      selectedDate = key;
+      viewDate = new Date(d);
       render();
     });
 
@@ -497,152 +440,189 @@ function renderCalendar(){
   }
 }
 
-function makeEventRow(ev,day){
-  const row=document.createElement("div");
-  row.className="event-row";
+function makeEventRow(ev, day) {
+  const row = document.createElement("div");
+  row.className = "event-row";
 
-  const bar=document.createElement("span");
-  bar.className="event-color";
-  bar.style.background=CATEGORIES[ev.category]?.color||"#999";
+  const bar = document.createElement("span");
+  bar.className = "event-color";
+  bar.style.background =
+    CATEGORIES[ev.category]?.color || "#999";
+
   row.append(bar);
 
-  const main=document.createElement("div");
-  main.className="event-main";
+  const main = document.createElement("div");
+  main.className = "event-main";
 
-  const name=document.createElement("div");
-  name.className="event-name";
-  name.textContent=ev.title;
-  if(ev.done)name.style.textDecoration="line-through";
+  const name = document.createElement("div");
+  name.className = "event-name";
+  name.textContent = ev.title;
 
-  const meta=document.createElement("div");
-  meta.className="event-meta";
+  if (ev.done) {
+    name.style.textDecoration = "line-through";
+  }
 
-  const cat=CATEGORIES[ev.category]?.label||"その他";
+  const meta = document.createElement("div");
+  meta.className = "event-meta";
 
-  meta.textContent=`${ev.time||"時間未定"} · ${cat}${ev.repeat!=="none"?" · 繰り返し":""}${ev.notes?" · メモあり":""}`;
+  const cat =
+    CATEGORIES[ev.category]?.label || "その他";
 
-  main.append(name,meta);
+  meta.textContent =
+    `${ev.time || "時間未定"} · ${cat}` +
+    `${ev.repeat !== "none" ? " · 繰り返し" : ""}` +
+    `${ev.notes ? " · メモあり" : ""}`;
+
+  main.append(name, meta);
   row.append(main);
 
-  const actions=document.createElement("div");
-  actions.className="event-actions";
+  const actions = document.createElement("div");
+  actions.className = "event-actions";
 
-  const check=document.createElement("input");
-  check.type="checkbox";
-  check.className="done-check";
-  check.checked=!!ev.done;
-  check.setAttribute("aria-label","完了");
+  const check = document.createElement("input");
+  check.type = "checkbox";
+  check.className = "done-check";
+  check.checked = !!ev.done;
+  check.setAttribute("aria-label", "完了");
 
-  check.addEventListener("change",()=>{
-    const original=events.find(x=>x.id===ev.id);
+  check.addEventListener("change", () => {
+    const original = events.find(x => x.id === ev.id);
 
-    if(original){
-      original.done=check.checked;
-      localStorage.setItem(STORAGE_KEY,JSON.stringify(events));
+    if (original) {
+      original.done = check.checked;
+
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify(events)
+      );
+
       render();
       syncEventToCloud(original);
     }
   });
 
-  const edit=document.createElement("button");
-  edit.className="event-edit";
-  edit.textContent="⋯";
-  edit.setAttribute("aria-label","編集");
-  edit.addEventListener("click",()=>openEditor(ev));
+  const edit = document.createElement("button");
+  edit.className = "event-edit";
+  edit.textContent = "⋯";
+  edit.setAttribute("aria-label", "編集");
 
-  actions.append(check,edit);
+  edit.addEventListener("click", () => {
+    openEditor(ev);
+  });
+
+  actions.append(check, edit);
   row.append(actions);
 
   return row;
 }
 
-function renderAgenda(){
-  $("selectedDateLabel").textContent=parseDate(selectedDate).toLocaleDateString("ja-JP",{
-    month:"long",day:"numeric",weekday:"short"
-  });
+function renderAgenda() {
+  $("selectedDateLabel").textContent =
+    parseDate(selectedDate).toLocaleDateString("ja-JP", {
+      month: "long",
+      day: "numeric",
+      weekday: "short"
+    });
 
-  const list=$("agendaList");
-  list.innerHTML="";
+  const list = $("agendaList");
+  list.innerHTML = "";
 
-  const items=eventsOn(selectedDate);
+  const items = eventsOn(selectedDate);
 
-  if(!items.length){
-    list.innerHTML='<div class="empty">この日の予定はありません。</div>';
+  if (!items.length) {
+    list.innerHTML =
+      '<div class="empty">この日の予定はありません。</div>';
     return;
   }
 
-  items.forEach(e=>list.append(makeEventRow(e,selectedDate)));
+  items.forEach(e => {
+    list.append(makeEventRow(e, selectedDate));
+  });
 }
 
-function renderToday(){
-  const today=dateKey(new Date());
+function renderToday() {
+  const today = dateKey(new Date());
 
-  $("todayLabel").textContent=new Date().toLocaleDateString("ja-JP",{
-    month:"long",day:"numeric",weekday:"long"
-  });
+  $("todayLabel").textContent =
+    new Date().toLocaleDateString("ja-JP", {
+      month: "long",
+      day: "numeric",
+      weekday: "long"
+    });
 
-  const items=eventsOn(today);
-  $("todayCount").textContent=`${items.length}件の予定`;
+  const items = eventsOn(today);
 
-  const list=$("todayList");
-  list.innerHTML="";
+  $("todayCount").textContent = `${items.length}件の予定`;
 
-  if(!items.length){
-    list.innerHTML='<div class="empty">今日は予定がありません。</div>';
+  const list = $("todayList");
+  list.innerHTML = "";
+
+  if (!items.length) {
+    list.innerHTML =
+      '<div class="empty">今日は予定がありません。</div>';
     return;
   }
 
-  items.slice(0,4).forEach(e=>list.append(makeEventRow(e,today)));
+  items.slice(0, 4).forEach(e => {
+    list.append(makeEventRow(e, today));
+  });
 }
 
 // ------------------------------
 // Event editor
 // ------------------------------
 
-function openEditor(ev=null){
+function openEditor(ev = null) {
   $("eventForm").reset();
-  $("eventId").value=ev?.id||"";
 
-  $("dialogTitle").textContent=ev?"予定を編集":"予定を追加";
-  $("eventTitle").value=ev?.title||"";
-  $("eventDate").value=ev?.date||selectedDate;
-  $("eventTime").value=ev?.time||"";
-  $("eventCategory").value=ev?.category||"work";
-  $("eventRepeat").value=ev?.repeat||"none";
-  $("eventReminder").value=ev?.reminder??"none";
-  $("eventNotes").value=ev?.notes||"";
+  $("eventId").value = ev?.id || "";
 
-  $("deleteBtn").classList.toggle("hidden",!ev);
+  $("dialogTitle").textContent =
+    ev ? "予定を編集" : "予定を追加";
+
+  $("eventTitle").value = ev?.title || "";
+  $("eventDate").value = ev?.date || selectedDate;
+  $("eventTime").value = ev?.time || "";
+  $("eventCategory").value = ev?.category || "work";
+  $("eventRepeat").value = ev?.repeat || "none";
+  $("eventReminder").value = ev?.reminder ?? "none";
+  $("eventNotes").value = ev?.notes || "";
+
+  $("deleteBtn").classList.toggle("hidden", !ev);
+
   $("eventDialog").showModal();
 }
 
-function saveEvent(e){
+function saveEvent(e) {
   e.preventDefault();
 
-  const id=$("eventId").value;
+  const id = $("eventId").value;
 
-  const item={
-    id:id||uid(),
-    title:$("eventTitle").value.trim(),
-    date:$("eventDate").value,
-    time:$("eventTime").value,
-    category:$("eventCategory").value,
-    repeat:$("eventRepeat").value,
-    reminder:$("eventReminder").value,
-    notes:$("eventNotes").value.trim(),
-    done:id?(events.find(x=>x.id===id)?.done||false):false
+  const item = {
+    id: id || uid(),
+    title: $("eventTitle").value.trim(),
+    date: $("eventDate").value,
+    time: $("eventTime").value,
+    category: $("eventCategory").value,
+    repeat: $("eventRepeat").value,
+    reminder: $("eventReminder").value,
+    notes: $("eventNotes").value.trim(),
+    done: id
+      ? (events.find(x => x.id === id)?.done || false)
+      : false
   };
 
-  if(!item.title||!item.date)return;
+  if (!item.title || !item.date) return;
 
-  if(id){
-    events=events.map(x=>x.id===id?item:x);
-  }else{
+  if (id) {
+    events = events.map(x => x.id === id ? item : x);
+  } else {
     events.push(item);
   }
 
-  selectedDate=item.date;
-  viewDate=parseDate(item.date);
+  selectedDate = item.date;
+  viewDate = parseDate(item.date);
+
   $("eventDialog").close();
 
   save();
@@ -655,55 +635,69 @@ function saveEvent(e){
 // Backup / Restore
 // ------------------------------
 
-function exportData(){
-  const blob=new Blob([
+function exportData() {
+  const blob = new Blob([
     JSON.stringify({
-      app:"My Schedule",
-      version:1,
-      exportedAt:new Date().toISOString(),
+      app: "My Schedule",
+      version: 1,
+      exportedAt: new Date().toISOString(),
       events
-    },null,2)
-  ],{type:"application/json"});
+    }, null, 2)
+  ], {
+    type: "application/json"
+  });
 
-  const url=URL.createObjectURL(blob);
-  const a=document.createElement("a");
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
 
-  a.href=url;
-  a.download=`my-schedule-${dateKey(new Date())}.json`;
+  a.href = url;
+  a.download = `my-schedule-${dateKey(new Date())}.json`;
+
   a.click();
 
   URL.revokeObjectURL(url);
+
   toast("バックアップを作成しました。");
 }
 
-function importData(file){
-  const reader=new FileReader();
+function importData(file) {
+  const reader = new FileReader();
 
-  reader.onload=()=>{
-    try{
-      const data=JSON.parse(reader.result);
-      const incoming=Array.isArray(data)?data:data.events;
+  reader.onload = () => {
+    try {
+      const data = JSON.parse(reader.result);
 
-      if(!Array.isArray(incoming)||!incoming.every(x=>x.title&&x.date)){
+      const incoming =
+        Array.isArray(data) ? data : data.events;
+
+      if (
+        !Array.isArray(incoming) ||
+        !incoming.every(x => x.title && x.date)
+      ) {
         throw Error();
       }
 
-      if(!confirm(`バックアップ内の予定${incoming.length}件を読み込みますか？既存の予定は保持し、同じIDの項目は上書きします。`)){
+      if (!confirm(
+        `バックアップ内の予定${incoming.length}件を読み込みますか？既存の予定は保持し、同じIDの項目は上書きします。`
+      )) {
         return;
       }
 
-      const map=new Map(events.map(x=>[x.id,x]));
+      const map = new Map(
+        events.map(x => [x.id, x])
+      );
 
-      incoming.forEach(x=>{
-        const id=x.id||uid();
-        map.set(id,{...x,id});
+      incoming.forEach(x => {
+        const id = x.id || uid();
+        map.set(id, { ...x, id });
       });
 
-      events=[...map.values()];
+      events = [...map.values()];
+
       save();
 
-      if(cloudToken){
-        syncAllCloud().catch(error=>{
+      if (cloudToken) {
+        syncAllCloud().catch(error => {
           console.error(error);
           setCloudStatus("復元済み・クラウド未同期");
         });
@@ -711,8 +705,10 @@ function importData(file){
 
       toast("復元が完了しました。");
 
-    }catch{
-      alert("My Scheduleのバックアップファイルとして読み込めません。");
+    } catch {
+      alert(
+        "My Scheduleのバックアップファイルとして読み込めません。"
+      );
     }
   };
 
@@ -723,40 +719,59 @@ function importData(file){
 // Notifications
 // ------------------------------
 
-function checkReminders(){
-  if(!("Notification"in window)||Notification.permission!=="granted")return;
+function checkReminders() {
+  if (
+    !("Notification" in window) ||
+    Notification.permission !== "granted"
+  ) {
+    return;
+  }
 
-  const now=new Date();
+  const now = new Date();
 
-  events.forEach(ev=>{
-    if(!ev.time||ev.reminder==="none")return;
+  events.forEach(ev => {
+    if (!ev.time || ev.reminder === "none") return;
 
-    const daysBack=ev.repeat==="none"?0:370;
-    const from=new Date(now);
-    from.setDate(from.getDate()-daysBack);
+    const daysBack = ev.repeat === "none" ? 0 : 370;
 
-    const occurrence=occurrenceDates(
+    const from = new Date(now);
+    from.setDate(from.getDate() - daysBack);
+
+    const occurrence = occurrenceDates(
       ev,
       from,
-      new Date(now.getFullYear(),now.getMonth(),now.getDate()+1)
+      new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate() + 1
+      )
     );
 
-    occurrence.forEach(day=>{
-      const [h,m]=ev.time.split(":").map(Number);
-      const due=parseDate(day);
+    occurrence.forEach(day => {
+      const [h, m] = ev.time.split(":").map(Number);
 
-      due.setHours(h,m,0,0);
-      due.setMinutes(due.getMinutes()-Number(ev.reminder));
+      const due = parseDate(day);
 
-      const key=`${ev.id}|${day}|${ev.reminder}`;
+      due.setHours(h, m, 0, 0);
+      due.setMinutes(
+        due.getMinutes() - Number(ev.reminder)
+      );
 
-      if(due<=now&&now-due<60000&&!sessionStorage.getItem(key)){
-        new Notification(ev.title,{
-          body:`${ev.time}の予定${ev.notes?" · "+ev.notes:""}`,
-          icon:"./icon-192.png"
+      const key = `${ev.id}|${day}|${ev.reminder}`;
+
+      if (
+        due <= now &&
+        now - due < 60000 &&
+        !sessionStorage.getItem(key)
+      ) {
+        new Notification(ev.title, {
+          body:
+            `${ev.time}の予定` +
+            `${ev.notes ? " · " + ev.notes : ""}`,
+          icon: "./icon-192.png"
         });
 
-        sessionStorage.setItem(key,"1");
+        sessionStorage.setItem(key, "1");
       }
     });
   });
@@ -766,40 +781,43 @@ function checkReminders(){
 // UI events
 // ------------------------------
 
-$("prevMonth").onclick=()=>{
-  viewDate.setMonth(viewDate.getMonth()-1);
+$("prevMonth").onclick = () => {
+  viewDate.setMonth(viewDate.getMonth() - 1);
   renderCalendar();
 };
 
-$("nextMonth").onclick=()=>{
-  viewDate.setMonth(viewDate.getMonth()+1);
+$("nextMonth").onclick = () => {
+  viewDate.setMonth(viewDate.getMonth() + 1);
   renderCalendar();
 };
 
-$("addBtn").onclick=()=>openEditor();
-$("navAdd").onclick=()=>openEditor();
+$("addBtn").onclick = () => openEditor();
+$("navAdd").onclick = () => openEditor();
 
-$("navToday").onclick=()=>{
-  selectedDate=dateKey(new Date());
-  viewDate=new Date();
+$("navToday").onclick = () => {
+  selectedDate = dateKey(new Date());
+  viewDate = new Date();
   render();
 };
 
-$("navCalendar").onclick=()=>{
-  document.querySelector(".calendar").scrollIntoView({behavior:"smooth"});
+$("navCalendar").onclick = () => {
+  document.querySelector(".calendar")
+    .scrollIntoView({ behavior: "smooth" });
 };
 
-$("closeDialog").onclick=$("cancelBtn").onclick=()=>{
+$("closeDialog").onclick =
+$("cancelBtn").onclick = () => {
   $("eventDialog").close();
 };
 
-$("eventForm").addEventListener("submit",saveEvent);
+$("eventForm").addEventListener("submit", saveEvent);
 
-$("deleteBtn").onclick=()=>{
-  const id=$("eventId").value;
+$("deleteBtn").onclick = () => {
+  const id = $("eventId").value;
 
-  if(id&&confirm("この予定を削除しますか？")){
-    events=events.filter(x=>x.id!==id);
+  if (id && confirm("この予定を削除しますか？")) {
+    events = events.filter(x => x.id !== id);
+
     $("eventDialog").close();
 
     save();
@@ -809,46 +827,61 @@ $("deleteBtn").onclick=()=>{
   }
 };
 
-$("exportBtn").onclick=exportData;
-$("importBtn").onclick=()=>$("importFile").click();
+$("exportBtn").onclick = exportData;
 
-$("importFile").onchange=e=>{
-  if(e.target.files[0])importData(e.target.files[0]);
-  e.target.value="";
+$("importBtn").onclick = () => {
+  $("importFile").click();
 };
 
-$("settingsBtn").onclick=()=>{
+$("importFile").onchange = e => {
+  if (e.target.files[0]) {
+    importData(e.target.files[0]);
+  }
+
+  e.target.value = "";
+};
+
+$("settingsBtn").onclick = () => {
   $("settingsDialog").showModal();
 };
 
-$("closeSettings").onclick=()=>{
+$("closeSettings").onclick = () => {
   $("settingsDialog").close();
 };
 
-$("enableNotifications").onclick=async()=>{
-  if(!("Notification"in window)){
+$("enableNotifications").onclick = async () => {
+  if (!("Notification" in window)) {
     alert("このブラウザは通知に対応していません。");
     return;
   }
 
-  const p=await Notification.requestPermission();
+  const p = await Notification.requestPermission();
 
-  $("notificationStatus").textContent=p==="granted"
-    ?"通知が許可されました。アプリを開いている間に通知を確認できます。"
-    :"通知が許可されていません。";
+  $("notificationStatus").textContent =
+    p === "granted"
+      ? "通知が許可されました。アプリを開いている間に通知を確認できます。"
+      : "通知が許可されていません。";
 };
 
-$("installHelp").onclick=()=>{
-  alert("Safariでこのアプリを開き、共有ボタンから「ホーム画面に追加」を選択してください。");
+$("installHelp").onclick = () => {
+  alert(
+    "Safariでこのアプリを開き、共有ボタンから「ホーム画面に追加」を選択してください。"
+  );
 };
 
+// ------------------------------
 // Cloud login / logout
-$("connectCloud").onclick=loginAndSync;
+// ------------------------------
 
-$("disconnectCloud").onclick=()=>{
-  cloudToken="";
+$("connectCloud").onclick = loginAndSync;
+
+$("disconnectCloud").onclick = () => {
+  cloudToken = "";
+
   localStorage.removeItem(TOKEN_KEY);
+
   setCloudStatus("クラウド未接続");
+
   toast("ログアウトしました。");
 };
 
@@ -856,30 +889,21 @@ $("disconnectCloud").onclick=()=>{
 // Start
 // ------------------------------
 
-if(cloudToken){
+if (cloudToken) {
   setCloudStatus("ログイン情報あり（同期可能）");
 }
 
-if("serviceWorker"in navigator&&location.protocol.startsWith("http")){
-  navigator.serviceWorker.register("./sw.js").catch(()=>{});
-}
-
-$("connectCloud").onclick = loginAndSync;
-
-$("disconnectCloud").onclick = () => {
-  cloudToken = "";
-  localStorage.removeItem(TOKEN_KEY);
-
-  $("cloudStatus").textContent = "クラウド未接続";
-
-  toast("ログアウトしました。");
-};
-
-if (cloudToken) {
-  $("cloudStatus").textContent = "ログイン済み";
+if (
+  "serviceWorker" in navigator &&
+  location.protocol.startsWith("http")
+) {
+  navigator.serviceWorker.register("./sw.js")
+    .catch(error => {
+      console.error("Service Worker error:", error);
+    });
 }
 
 render();
 checkReminders();
-setInterval(checkReminders,15000);
 
+setInterval(checkReminders, 15000);
