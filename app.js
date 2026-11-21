@@ -135,66 +135,115 @@ function convertCloudEvent(row) {
 }
 
 // クラウド全体同期
+
 async function syncAllCloud() {
   if (!cloudToken) {
     setCloudStatus("クラウド未接続");
     return;
   }
 
-  setCloudStatus("クラウドと同期中...");
+  try {
+    setCloudStatus("クラウドと同期中...");
 
-  // 1. クラウドの予定を取得
-  const result = await cloudRequest("/api/events");
+    // 1. 서버 데이터 가져오기
+    let result = await cloudRequest("/api/events");
 
-  const remoteEvents = (result.events || []).map(convertCloudEvent);
+    // 2. 로컬 및 서버 삭제 기록 통합
+    const localDeleted = loadDeletedIds();
+    const serverDeleted = result.deletedIds || [];
 
-  // 2. 削除履歴を確認
-  const deletedIds = loadDeletedIds();
-  const deletedSet = new Set(deletedIds);
+    const deletedSet = new Set([
+      ...localDeleted,
+      ...serverDeleted
+    ]);
 
-  // 3. 削除履歴をクラウドに反映
-  for (const id of deletedIds) {
-    await cloudRequest(
-      "/api/events?id=" + encodeURIComponent(id),
-      { method: "DELETE" }
-    );
-  }
-
-  // 4. クラウドとローカルの予定を統合
-  const merged = new Map();
-
-  remoteEvents.forEach(ev => {
-    if (!deletedSet.has(ev.id)) {
-      merged.set(ev.id, ev);
+    // 3. 로컬 삭제 기록을 서버에 전달
+    for (const id of localDeleted) {
+      await cloudRequest(
+        "/api/events?id=" + encodeURIComponent(id),
+        { method: "DELETE" }
+      );
     }
-  });
 
-  // 同じIDの場合はローカルの予定を優先
-  events.forEach(ev => {
-    if (!deletedSet.has(ev.id)) {
+    // 4. 서버의 최신 데이터 다시 가져오기
+    result = await cloudRequest("/api/events");
+
+    const finalDeletedSet = new Set([
+      ...deletedSet,
+      ...(result.deletedIds || [])
+    ]);
+
+    const remoteEvents = (result.events || [])
+      .map(convertCloudEvent)
+      .filter(ev => !finalDeletedSet.has(ev.id));
+
+    // 5. 로컬과 서버 일정 통합
+    const merged = new Map();
+
+    remoteEvents.forEach(ev => {
       merged.set(ev.id, ev);
-    }
-  });
-
-  events = [...merged.values()];
-
-  // 5. ローカルに保存
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(events));
-  render();
-
-  // 6. クラウドに保存
-  for (const ev of events) {
-    await cloudRequest("/api/events", {
-      method: "POST",
-      body: JSON.stringify(ev)
     });
+
+    // 같은 ID라면 로컬 데이터를 우선
+    events.forEach(ev => {
+      if (!finalDeletedSet.has(ev.id)) {
+        merged.set(ev.id, ev);
+      }
+    });
+
+    events = [...merged.values()];
+
+    // 6. 로컬 데이터 저장 및 화면 갱신
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify(events)
+    );
+
+    render();
+
+    // 7. 통합된 일정을 서버에 저장
+    for (const ev of events) {
+      const saved = await cloudRequest("/api/events", {
+        method: "POST",
+        body: JSON.stringify(ev)
+      });
+
+      // 서버에서 이미 삭제된 일정이면 복구하지 않음
+      if (saved.status === "deleted") {
+        finalDeletedSet.add(ev.id);
+      }
+    }
+
+    // 8. 서버 최종 데이터 확인
+    result = await cloudRequest("/api/events");
+
+    const confirmedDeleted = new Set([
+      ...finalDeletedSet,
+      ...(result.deletedIds || [])
+    ]);
+
+    events = events.filter(
+      ev => !confirmedDeleted.has(ev.id)
+    );
+
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify(events)
+    );
+
+    // 9. 삭제 기록은 서버에 반영됐으므로 로컬 기록 정리
+    saveDeletedIds([]);
+
+    render();
+
+    setCloudStatus(`同期完了（${events.length}件）`);
+
+  } catch (error) {
+    console.error("Cloud sync error:", error);
+    setCloudStatus("同期エラー: " + error.message);
   }
-
-  // 7. 同期成功後に削除履歴をクリア
-  saveDeletedIds([]);
-
-  setCloudStatus(`同期完了（${events.length}件）`);
 }
+
 
 // ログイン
 async function loginAndSync() {
