@@ -864,6 +864,22 @@ if("serviceWorker"in navigator&&location.protocol.startsWith("http")){
   navigator.serviceWorker.register("./sw.js").catch(()=>{});
 }
 
+$("connectCloud").onclick = loginAndSync;
+
+$("disconnectCloud").onclick = () => {
+  cloudToken = "";
+  localStorage.removeItem(TOKEN_KEY);
+
+  $("cloudStatus").textContent = "クラウド未接続";
+
+  toast("ログアウトしました。");
+};
+
+if (cloudToken) {
+  $("cloudStatus").textContent = "ログイン済み";
+}
+
 render();
 checkReminders();
 setInterval(checkReminders,15000);
+
