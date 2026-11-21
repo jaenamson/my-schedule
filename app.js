@@ -1,5 +1,9 @@
 
 const STORAGE_KEY = "my-schedule-events-v1";
+const API_BASE = "https://my-schedule-push.sonjaenam4261.workers.dev";
+const TOKEN_KEY = "my-schedule-api-token-v1";
+
+let cloudToken = localStorage.getItem(TOKEN_KEY) || "";
 const TOKEN_KEY = "my-schedule-api-token-v1";
 const DELETED_KEY = "my-schedule-deleted-v1";
 
@@ -48,7 +52,152 @@ function save(){
   localStorage.setItem(STORAGE_KEY,JSON.stringify(events));
   render();
 }
+// Cloudflare API 통신
+async function cloudRequest(path, options = {}) {
+  const headers = {
+    ...(options.headers || {}),
+    Authorization: `Bearer ${cloudToken}`
+  };
 
+  if (options.body) {
+    headers["Content-Type"] = "application/json";
+  }
+
+  const res = await fetch(API_BASE + path, {
+    ...options,
+    headers
+  });
+
+  const data = await res.json();
+
+  if (!res.ok) {
+    throw new Error(data.error || `HTTP ${res.status}`);
+  }
+
+  return data;
+}
+
+// 일정 1건 클라우드 저장
+async function cloudSaveEvent(event) {
+  if (!cloudToken) return;
+
+  try {
+    await cloudRequest("/api/events", {
+      method: "POST",
+      body: JSON.stringify(event)
+    });
+
+    $("cloudStatus").textContent = "クラウド同期済み";
+  } catch (error) {
+    $("cloudStatus").textContent =
+      "ローカル保存済み・クラウド同期失敗";
+    console.error(error);
+  }
+}
+
+// 클라우드 일정 전체 동기화
+async function syncAllEvents() {
+  for (const event of events) {
+    await cloudRequest("/api/events", {
+      method: "POST",
+      body: JSON.stringify(event)
+    });
+  }
+}
+
+// 로그인 및 최초 동기화
+async function loginAndSync() {
+  const password = $("cloudPassword").value;
+
+  if (!password) {
+    alert("パスワードを入力してください。");
+    return;
+  }
+
+  $("cloudStatus").textContent = "接続中...";
+
+  try {
+    // 비밀번호 인증
+    const loginRes = await fetch(API_BASE + "/auth", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ password })
+    });
+
+    const loginData = await loginRes.json();
+
+    if (!loginRes.ok) {
+      throw new Error(loginData.error || "ログインに失敗しました。");
+    }
+
+    cloudToken = loginData.token;
+    localStorage.setItem(TOKEN_KEY, cloudToken);
+
+    // 클라우드 일정 가져오기
+    const remoteData = await cloudRequest("/api/events");
+
+    const remoteEvents = remoteData.events.map(e => ({
+      id: e.id,
+      title: e.title,
+      date: e.event_date || e.start_at.slice(0, 10),
+      time: e.event_time || "",
+      category: e.category || "other",
+      repeat: e.repeat_type || "none",
+      reminder: e.reminder || "none",
+      notes: e.memo || "",
+      done: !!e.is_done
+    }));
+
+    // 같은 ID는 로컬 일정을 우선하고, 서로 다른 일정은 모두 유지
+    const merged = new Map();
+
+    remoteEvents.forEach(e => merged.set(e.id, e));
+    events.forEach(e => merged.set(e.id, e));
+
+    events = [...merged.values()];
+
+    // 로컬 저장소 보존 및 갱신
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(events));
+    render();
+
+    // 병합된 전체 일정을 클라우드에 반영
+    await syncAllEvents();
+
+    $("cloudPassword").value = "";
+    $("cloudStatus").textContent =
+      `同期完了（${events.length}件）`;
+
+    toast("クラウド同期が完了しました。");
+
+  } catch (error) {
+    $("cloudStatus").textContent =
+      "同期エラー：" + error.message;
+
+    console.error(error);
+  }
+}
+
+// 클라우드 일정 삭제
+async function cloudDeleteEvent(id) {
+  if (!cloudToken) return;
+
+  try {
+    await cloudRequest(
+      "/api/events?id=" + encodeURIComponent(id),
+      { method: "DELETE" }
+    );
+
+    $("cloudStatus").textContent = "クラウド同期済み";
+
+  } catch (error) {
+    $("cloudStatus").textContent =
+      "ローカル保存済み・クラウド同期失敗";
+
+    console.error(error);
+  }
+}
 function uid(){
   return crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random();
 }
