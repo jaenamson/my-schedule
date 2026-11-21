@@ -118,6 +118,34 @@
     <hr>
     <p class="muted small-text">iOSのPWAではバックグラウンド通知に別途Pushサーバーが必要です。ホーム画面ウィジェットはネイティブiOSアプリの機能のため、このPWA版では利用できません。</p>
     <button id="installHelp" class="secondary full">ホーム画面への追加方法</button>
+    <hr>
+
+<h3>クラウド同期</h3>
+<p class="muted small-text">
+  Cloudflareにログインして、予定をクラウドと同期します。
+</p>
+
+<label>
+  パスワード
+  <input
+    id="cloudPassword"
+    type="password"
+    autocomplete="current-password"
+    placeholder="Cloudflareのパスワード"
+  >
+</label>
+
+<button id="connectCloud" class="primary full">
+  ログインして同期
+</button>
+
+<p id="cloudStatus" class="muted small-text">
+  クラウド未接続
+</p>
+
+<button id="disconnectCloud" class="secondary full">
+  ログアウト
+</button>
   </dialog>
 
   <div id="toast" class="toast" role="status"></div>
