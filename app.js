@@ -177,21 +177,34 @@ async function syncAllCloud() {
       .map(convertCloudEvent)
       .filter(ev => !finalDeletedSet.has(ev.id));
 
-    // 5. 로컬과 서버 일정 통합
-    const merged = new Map();
 
-    remoteEvents.forEach(ev => {
-      merged.set(ev.id, ev);
-    });
+// 5. 로컬과 서버 일정 통합
+const merged = new Map();
 
-    // 같은 ID라면 로컬 데이터를 우선
-    events.forEach(ev => {
-      if (!finalDeletedSet.has(ev.id)) {
-        merged.set(ev.id, ev);
-      }
-    });
+// 서버 데이터를 먼저 등록
+remoteEvents.forEach(ev => {
+  merged.set(ev.id, ev);
+});
 
-    events = [...merged.values()];
+// 이번에 수정된 일정은 서버 데이터를 우선
+const REMOTE_WINS_IDS = new Set([
+  "f178f5ad-8e6f-4b5a-bbfd-87e9c469356a"
+]);
+
+// 그 외 일정은 기존처럼 로컬 데이터를 우선
+events.forEach(ev => {
+  if (finalDeletedSet.has(ev.id)) return;
+
+  // 서버에 해당 일정이 있으면 서버 데이터를 유지
+  if (REMOTE_WINS_IDS.has(ev.id) && merged.has(ev.id)) {
+    return;
+  }
+
+  merged.set(ev.id, ev);
+});
+
+events = [...merged.values()];
+
 
     // 6. 로컬 데이터 저장 및 화면 갱신
     localStorage.setItem(
