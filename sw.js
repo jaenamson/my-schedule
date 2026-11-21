@@ -1,5 +1,5 @@
 
-const CACHE = "my-schedule-cache-v7";
+const CACHE = "my-schedule-cache-v8";
 
 const ASSETS = [
   "./",
@@ -46,6 +46,7 @@ self.addEventListener("push", event => {
   }
 
   const title = data.title || "My Schedule";
+
   const options = {
     body: data.body || "予定の時間です。",
     icon: "./icon-192.png",
@@ -87,17 +88,52 @@ self.addEventListener("notificationclick", event => {
 self.addEventListener("fetch", event => {
   if (event.request.method !== "GET") return;
 
+  const url = new URL(event.request.url);
+
+  const isMainFile =
+    url.pathname.endsWith("/app.js") ||
+    url.pathname.endsWith("/index.html") ||
+    event.request.mode === "navigate";
+
+  if (isMainFile) {
+    // メインファイルはネットワーク優先
+    event.respondWith(
+      fetch(new Request(event.request, { cache: "no-store" }))
+        .then(response => {
+          if (response.ok) {
+            const copy = response.clone();
+
+            caches.open(CACHE).then(cache =>
+              cache.put(event.request, copy)
+            );
+          }
+
+          return response;
+        })
+        .catch(async () => {
+          const cached = await caches.match(event.request);
+
+          return cached || caches.match("./index.html");
+        })
+    );
+
+    return;
+  }
+
+  // CSS・画像などはキャッシュ優先
   event.respondWith(
     caches.match(event.request).then(cached =>
       cached || fetch(event.request).then(response => {
-        const copy = response.clone();
+        if (response.ok) {
+          const copy = response.clone();
 
-        caches.open(CACHE).then(cache =>
-          cache.put(event.request, copy)
-        );
+          caches.open(CACHE).then(cache =>
+            cache.put(event.request, copy)
+          );
+        }
 
         return response;
-      }).catch(() => caches.match("./index.html"))
+      })
     )
   );
 });
