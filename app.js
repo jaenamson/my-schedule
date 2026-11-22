@@ -340,10 +340,8 @@ async function syncAllCloud() {
 
     render();
 
+  setCloudStatus(`同期完了（${events.length}件）`);
 
-  setCloudStatus(
-    `DEBUG: 取得${result.events.length}件 / 削除ID${finalServerDeleted.size}件 / 最終${events.length}件`
-  );
   } catch (error) {
     console.error("Cloud sync error:", error);
 
