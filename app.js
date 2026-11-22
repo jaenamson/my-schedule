@@ -340,8 +340,16 @@ async function syncAllCloud() {
 
     render();
 
-  setCloudStatus(`同期完了（${events.length}件）`);
-
+    const testId = "d15ad450-1387-49b1-b076-4b47b3152396";
+    
+    const receivedCount = result.events?.length || 0;
+    
+    const targetExists = (result.events || [])
+      .some(ev => ev.id === testId);
+    
+    setCloudStatus(
+      `DEBUG: 取得${receivedCount}件 / 対象${targetExists ? "有" : "無"} / 削除ID${finalServerDeleted.size}件 / 最終${events.length}件`
+    );
   } catch (error) {
     console.error("Cloud sync error:", error);
 
