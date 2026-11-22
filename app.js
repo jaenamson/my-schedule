@@ -35,7 +35,11 @@ function parseDate(s) {
 
 function loadEvents() {
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+    const data = JSON.parse(
+      localStorage.getItem(STORAGE_KEY) || "[]"
+    );
+
+    return Array.isArray(data) ? data : [];
   } catch {
     return [];
   }
@@ -43,14 +47,21 @@ function loadEvents() {
 
 function loadDeletedIds() {
   try {
-    return JSON.parse(localStorage.getItem(DELETED_KEY) || "[]");
+    const data = JSON.parse(
+      localStorage.getItem(DELETED_KEY) || "[]"
+    );
+
+    return Array.isArray(data) ? data : [];
   } catch {
     return [];
   }
 }
 
 function saveDeletedIds(ids) {
-  localStorage.setItem(DELETED_KEY, JSON.stringify(ids));
+  localStorage.setItem(
+    DELETED_KEY,
+    JSON.stringify([...new Set(ids)])
+  );
 }
 
 function uid() {
@@ -74,8 +85,25 @@ function toast(msg) {
 }
 
 function save() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(events));
+  localStorage.setItem(
+    STORAGE_KEY,
+    JSON.stringify(events)
+  );
+
   render();
+}
+
+function getUpdatedTime(ev) {
+  if (!ev?.updatedAt) return 0;
+
+  const time = Date.parse(ev.updatedAt);
+
+  return Number.isFinite(time) ? time : 0;
+}
+
+function setUpdatedTime(ev) {
+  ev.updatedAt = new Date().toISOString();
+  return ev;
 }
 
 // ------------------------------
@@ -130,11 +158,14 @@ function convertCloudEvent(row) {
     repeat: row.repeat_type || "none",
     reminder: row.reminder ?? "none",
     notes: row.memo || "",
-    done: Number(row.is_done) === 1
+    done: Number(row.is_done) === 1,
+    updatedAt: row.updated_at || null
   };
 }
 
-// クラウド全体同期
+// ------------------------------
+// Cloud synchronization
+// ------------------------------
 
 async function syncAllCloud() {
   if (!cloudToken) {
@@ -145,19 +176,12 @@ async function syncAllCloud() {
   try {
     setCloudStatus("クラウドと同期中...");
 
-    // 1. 서버 데이터 가져오기
+    // 1. サーバーの予定と削除記録を取得
     let result = await cloudRequest("/api/events");
 
-    // 2. 로컬 및 서버 삭제 기록 통합
+    // 2. ローカル削除記録をサーバーに送信
     const localDeleted = loadDeletedIds();
-    const serverDeleted = result.deletedIds || [];
 
-    const deletedSet = new Set([
-      ...localDeleted,
-      ...serverDeleted
-    ]);
-
-    // 3. 로컬 삭제 기록을 서버에 전달
     for (const id of localDeleted) {
       await cloudRequest(
         "/api/events?id=" + encodeURIComponent(id),
@@ -165,48 +189,78 @@ async function syncAllCloud() {
       );
     }
 
-    // 4. 서버의 최신 데이터 다시 가져오기
+    // 3. 削除反映後のサーバーデータを再取得
     result = await cloudRequest("/api/events");
 
-    const finalDeletedSet = new Set([
-      ...deletedSet,
-      ...(result.deletedIds || [])
+    const serverDeleted = result.deletedIds || [];
+
+    const deletedSet = new Set([
+      ...localDeleted,
+      ...serverDeleted
     ]);
 
+    // 4. サーバー予定を読み込む
     const remoteEvents = (result.events || [])
       .map(convertCloudEvent)
-      .filter(ev => !finalDeletedSet.has(ev.id));
+      .filter(ev =>
+        ev.id &&
+        ev.date &&
+        !deletedSet.has(ev.id)
+      );
 
+    const remoteMap = new Map(
+      remoteEvents.map(ev => [ev.id, ev])
+    );
 
-// 5. 로컬과 서버 일정 통합
-const merged = new Map();
+    // 5. ローカルとサーバーの更新日時を比較
+    const merged = new Map();
+    const uploadEvents = [];
 
-// 서버 데이터를 먼저 등록
-remoteEvents.forEach(ev => {
-  merged.set(ev.id, ev);
-});
+    // まずサーバーの予定を基準にする
+    for (const remote of remoteEvents) {
+      merged.set(remote.id, remote);
+    }
 
-// 이번에 수정된 일정은 서버 데이터를 우선
-const REMOTE_WINS_IDS = new Set([
-  "f178f5ad-8e6f-4b5a-bbfd-87e9c469356a"
-]);
+    // ローカル予定を比較する
+    for (const local of events) {
+      if (!local.id || deletedSet.has(local.id)) {
+        continue;
+      }
 
-// 그 외 일정은 기존처럼 로컬 데이터를 우선
-events.forEach(ev => {
-  if (finalDeletedSet.has(ev.id)) return;
+      const remote = remoteMap.get(local.id);
 
-  // 서버에 해당 일정이 있으면 서버 데이터를 유지
-  if (REMOTE_WINS_IDS.has(ev.id) && merged.has(ev.id)) {
-    return;
-  }
+      // サーバーに存在しない予定
+      if (!remote) {
+        const localCopy = { ...local };
 
-  merged.set(ev.id, ev);
-});
+        // 新規予定に更新日時がなければ付与
+        if (!getUpdatedTime(localCopy)) {
+          localCopy.updatedAt = new Date().toISOString();
+        }
 
-events = [...merged.values()];
+        merged.set(localCopy.id, localCopy);
+        uploadEvents.push(localCopy);
 
+        continue;
+      }
 
-    // 6. 로컬 데이터 저장 및 화면 갱신
+      const localTime = getUpdatedTime(local);
+      const remoteTime = getUpdatedTime(remote);
+
+      // ローカルの方が新しい場合のみローカルを採用
+      if (localTime > 0 && localTime > remoteTime) {
+        const localCopy = { ...local };
+
+        merged.set(localCopy.id, localCopy);
+        uploadEvents.push(localCopy);
+      }
+
+      // それ以外はサーバーの予定を維持
+    }
+
+    // 6. 統合した予定をローカルに保存
+    events = [...merged.values()];
+
     localStorage.setItem(
       STORAGE_KEY,
       JSON.stringify(events)
@@ -214,38 +268,75 @@ events = [...merged.values()];
 
     render();
 
-    // 7. 통합된 일정을 서버에 저장
-    for (const ev of events) {
-      const saved = await cloudRequest("/api/events", {
-        method: "POST",
-        body: JSON.stringify(ev)
-      });
+    // 7. ローカルの新しい予定だけサーバーに送信
+    for (const ev of uploadEvents) {
+      try {
+        const saved = await cloudRequest("/api/events", {
+          method: "POST",
+          body: JSON.stringify(ev)
+        });
 
-      // 서버에서 이미 삭제된 일정이면 복구하지 않음
-      if (saved.status === "deleted") {
-        finalDeletedSet.add(ev.id);
+        if (saved.status === "deleted") {
+          deletedSet.add(ev.id);
+        }
+
+        // staleの場合はサーバー側の新しいデータを採用する
+        // 最終取得時にサーバーの内容で置き換える
+      } catch (error) {
+        console.error(
+          "Cloud event upload error:",
+          ev.id,
+          error
+        );
+
+        // 送信に失敗した予定はローカルに残す
       }
     }
 
-    // 8. 서버 최종 데이터 확인
+    // 8. サーバーの最終状態を取得
     result = await cloudRequest("/api/events");
 
-    const confirmedDeleted = new Set([
-      ...finalDeletedSet,
-      ...(result.deletedIds || [])
-    ]);
-
-    events = events.filter(
-      ev => !confirmedDeleted.has(ev.id)
+    const finalServerDeleted = new Set(
+      result.deletedIds || []
     );
+
+    // ローカル削除記録のうち、サーバー確認済みのものを整理
+    const remainingDeleted = loadDeletedIds().filter(
+      id => !finalServerDeleted.has(id)
+    );
+
+    saveDeletedIds(remainingDeleted);
+
+    // 9. サーバーの最新予定を基準に最終統合
+    const finalRemoteEvents = (result.events || [])
+      .map(convertCloudEvent)
+      .filter(ev =>
+        ev.id &&
+        ev.date &&
+        !finalServerDeleted.has(ev.id)
+      );
+
+    const finalMap = new Map(
+      finalRemoteEvents.map(ev => [ev.id, ev])
+    );
+
+    // 送信失敗などでサーバーに存在しないローカル予定は保護
+    for (const local of events) {
+      if (
+        !finalMap.has(local.id) &&
+        !finalServerDeleted.has(local.id) &&
+        !remainingDeleted.includes(local.id)
+      ) {
+        finalMap.set(local.id, local);
+      }
+    }
+
+    events = [...finalMap.values()];
 
     localStorage.setItem(
       STORAGE_KEY,
       JSON.stringify(events)
     );
-
-    // 9. 삭제 기록은 서버에 반영됐으므로 로컬 기록 정리
-    saveDeletedIds([]);
 
     render();
 
@@ -253,12 +344,15 @@ events = [...merged.values()];
 
   } catch (error) {
     console.error("Cloud sync error:", error);
+
     setCloudStatus("同期エラー: " + error.message);
   }
 }
 
+// ------------------------------
+// Login
+// ------------------------------
 
-// ログイン
 async function loginAndSync() {
   const password = $("cloudPassword").value;
 
@@ -273,25 +367,27 @@ async function loginAndSync() {
   setCloudStatus("ログイン中...");
 
   try {
-    // パスワード認証
     const result = await cloudRequest("/auth", {
       method: "POST",
       body: JSON.stringify({ password })
     });
 
     if (!result.token) {
-      throw new Error("認証トークンを取得できませんでした。");
+      throw new Error(
+        "認証トークンを取得できませんでした。"
+      );
     }
 
     cloudToken = result.token;
-    localStorage.setItem(TOKEN_KEY, cloudToken);
+
+    localStorage.setItem(
+      TOKEN_KEY,
+      cloudToken
+    );
 
     $("cloudPassword").value = "";
 
-    // 初回同期
     await syncAllCloud();
-
-    toast("クラウド同期が完了しました。");
 
   } catch (error) {
     console.error("Cloud login/sync error:", error);
@@ -308,7 +404,9 @@ async function loginAndSync() {
   }
 }
 
-// 予定1件をクラウドに保存
+// ------------------------------
+// Save one event to cloud
+// ------------------------------
 
 async function syncEventToCloud(ev) {
   if (!cloudToken) {
@@ -317,27 +415,130 @@ async function syncEventToCloud(ev) {
   }
 
   try {
+    // 更新日時がない場合は付与
+    if (!getUpdatedTime(ev)) {
+      setUpdatedTime(ev);
+    }
+
     const result = await cloudRequest("/api/events", {
       method: "POST",
       body: JSON.stringify(ev)
     });
 
-    if (result.status !== "ok") {
-      throw new Error("クラウドへの保存が確認できませんでした。");
+    // サーバー側で削除済みの場合
+    if (result.status === "deleted") {
+      events = events.filter(x => x.id !== ev.id);
+
+      const deletedIds = loadDeletedIds();
+
+      if (!deletedIds.includes(ev.id)) {
+        deletedIds.push(ev.id);
+        saveDeletedIds(deletedIds);
+      }
+
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify(events)
+      );
+
+      render();
+
+      setCloudStatus("削除済みの予定です");
+
+      return false;
     }
 
+    // サーバーの方が新しい場合
+    if (result.status === "stale") {
+      await reconcileOneEvent(ev.id);
+
+      setCloudStatus("サーバーの最新データを反映しました");
+
+      return false;
+    }
+
+    if (result.status !== "ok") {
+      throw new Error(
+        "クラウドへの保存が確認できませんでした。"
+      );
+    }
+
+    // サーバーが確定した更新日時を保存
+    ev.updatedAt = result.updated_at || ev.updatedAt;
+
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify(events)
+    );
+
     setCloudStatus("クラウド保存完了");
+
     return true;
 
   } catch (error) {
     console.error("Cloud save error:", error);
-    setCloudStatus("クラウド保存エラー: " + error.message);
+
+    setCloudStatus(
+      "クラウド保存エラー: " + error.message
+    );
+
     return false;
   }
 }
 
+// ------------------------------
+// Reconcile one event
+// ------------------------------
 
-// クラウドから予定を削除
+async function reconcileOneEvent(id) {
+  const result = await cloudRequest("/api/events");
+
+  const deletedIds = result.deletedIds || [];
+
+  if (deletedIds.includes(id)) {
+    events = events.filter(ev => ev.id !== id);
+
+    const localDeleted = loadDeletedIds();
+
+    if (!localDeleted.includes(id)) {
+      localDeleted.push(id);
+      saveDeletedIds(localDeleted);
+    }
+
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify(events)
+    );
+
+    render();
+
+    return;
+  }
+
+  const row = (result.events || []).find(
+    ev => ev.id === id
+  );
+
+  if (!row) return;
+
+  const remote = convertCloudEvent(row);
+
+  events = events.map(ev =>
+    ev.id === id ? remote : ev
+  );
+
+  localStorage.setItem(
+    STORAGE_KEY,
+    JSON.stringify(events)
+  );
+
+  render();
+}
+
+// ------------------------------
+// Delete event from cloud
+// ------------------------------
+
 async function deleteEventFromCloud(id) {
   const deletedIds = loadDeletedIds();
 
@@ -354,14 +555,21 @@ async function deleteEventFromCloud(id) {
       { method: "DELETE" }
     );
 
-    saveDeletedIds(
-      loadDeletedIds().filter(x => x !== id)
-    );
+    const result = await cloudRequest("/api/events");
 
-    setCloudStatus("クラウド削除完了");
+    const confirmed = (result.deletedIds || []).includes(id);
+
+    if (confirmed) {
+      saveDeletedIds(
+        loadDeletedIds().filter(x => x !== id)
+      );
+
+      setCloudStatus("クラウド削除完了");
+    }
 
   } catch (error) {
     console.error("Cloud delete error:", error);
+
     setCloudStatus("削除済み・クラウド未同期");
   }
 }
@@ -446,7 +654,8 @@ function renderCalendar() {
   const y = viewDate.getFullYear();
   const m = viewDate.getMonth();
 
-  $("monthTitle").textContent = `${y}年${m + 1}月`;
+  $("monthTitle").textContent =
+    `${y}年${m + 1}月`;
 
   const first = new Date(y, m, 1);
   const start = new Date(y, m, 1 - first.getDay());
@@ -559,10 +768,15 @@ function makeEventRow(ev, day) {
   check.setAttribute("aria-label", "完了");
 
   check.addEventListener("change", () => {
-    const original = events.find(x => x.id === ev.id);
+    const original = events.find(
+      x => x.id === ev.id
+    );
 
     if (original) {
       original.done = check.checked;
+
+      // 完了状態の変更も更新日時に反映
+      setUpdatedTime(original);
 
       localStorage.setItem(
         STORAGE_KEY,
@@ -570,6 +784,7 @@ function makeEventRow(ev, day) {
       );
 
       render();
+
       syncEventToCloud(original);
     }
   });
@@ -625,7 +840,8 @@ function renderToday() {
 
   const items = eventsOn(today);
 
-  $("todayCount").textContent = `${items.length}件の予定`;
+  $("todayCount").textContent =
+    `${items.length}件の予定`;
 
   const list = $("todayList");
   list.innerHTML = "";
@@ -666,7 +882,6 @@ function openEditor(ev = null) {
   $("eventDialog").showModal();
 }
 
-
 async function saveEvent(e) {
   e.preventDefault();
 
@@ -683,13 +898,16 @@ async function saveEvent(e) {
     notes: $("eventNotes").value.trim(),
     done: id
       ? (events.find(x => x.id === id)?.done || false)
-      : false
+      : false,
+    updatedAt: new Date().toISOString()
   };
 
   if (!item.title || !item.date) return;
 
   if (id) {
-    events = events.map(x => x.id === id ? item : x);
+    events = events.map(x =>
+      x.id === id ? item : x
+    );
   } else {
     events.push(item);
   }
@@ -705,7 +923,6 @@ async function saveEvent(e) {
 
   toast("予定を保存しました。");
 }
-
 
 // ------------------------------
 // Backup / Restore
@@ -727,7 +944,8 @@ function exportData() {
   const a = document.createElement("a");
 
   a.href = url;
-  a.download = `my-schedule-${dateKey(new Date())}.json`;
+  a.download =
+    `my-schedule-${dateKey(new Date())}.json`;
 
   a.click();
 
@@ -765,7 +983,13 @@ function importData(file) {
 
       incoming.forEach(x => {
         const id = x.id || uid();
-        map.set(id, { ...x, id });
+
+        // インポートはユーザーが明示的に行った更新として扱う
+        map.set(id, {
+          ...x,
+          id,
+          updatedAt: new Date().toISOString()
+        });
       });
 
       events = [...map.values()];
@@ -808,7 +1032,8 @@ function checkReminders() {
   events.forEach(ev => {
     if (!ev.time || ev.reminder === "none") return;
 
-    const daysBack = ev.repeat === "none" ? 0 : 370;
+    const daysBack =
+      ev.repeat === "none" ? 0 : 370;
 
     const from = new Date(now);
     from.setDate(from.getDate() - daysBack);
@@ -833,7 +1058,8 @@ function checkReminders() {
         due.getMinutes() - Number(ev.reminder)
       );
 
-      const key = `${ev.id}|${day}|${ev.reminder}`;
+      const key =
+        `${ev.id}|${day}|${ev.reminder}`;
 
       if (
         due <= now &&
@@ -886,7 +1112,10 @@ $("cancelBtn").onclick = () => {
   $("eventDialog").close();
 };
 
-$("eventForm").addEventListener("submit", saveEvent);
+$("eventForm").addEventListener(
+  "submit",
+  saveEvent
+);
 
 $("deleteBtn").onclick = () => {
   const id = $("eventId").value;
