@@ -1,5 +1,5 @@
 
-const CACHE = "my-schedule-cache-v10";
+const CACHE = "my-schedule-cache-v11";
 
 const ASSETS = [
   "./",
@@ -15,6 +15,7 @@ self.addEventListener("install", event => {
   event.waitUntil(
     caches.open(CACHE).then(cache => cache.addAll(ASSETS))
   );
+
   self.skipWaiting();
 });
 
@@ -28,6 +29,7 @@ self.addEventListener("activate", event => {
       )
     )
   );
+
   self.clients.claim();
 });
 
@@ -89,6 +91,11 @@ self.addEventListener("fetch", event => {
   if (event.request.method !== "GET") return;
 
   const url = new URL(event.request.url);
+
+  // 外部 API 요청은 서비스 워커 캐시를 사용하지 않음
+  if (url.origin !== self.location.origin) {
+    return;
+  }
 
   const isMainFile =
     url.pathname.endsWith("/app.js") ||
