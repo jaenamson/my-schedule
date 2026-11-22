@@ -1,5 +1,5 @@
 
-const CACHE = "my-schedule-cache-v9";
+const CACHE = "my-schedule-cache-v10";
 
 const ASSETS = [
   "./",
