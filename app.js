@@ -1,4 +1,4 @@
-
+console.log("MY SCHEDULE APP VERSION: DELETE-TEST-10");
 const STORAGE_KEY = "my-schedule-events-v1";
 const TOKEN_KEY = "my-schedule-api-token-v1";
 const DELETED_KEY = "my-schedule-deleted-v1";
